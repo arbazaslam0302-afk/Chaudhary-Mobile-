@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 void main() {
   runApp(const ChaudharyMobileApp());
@@ -370,7 +369,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     child: Padding(
                       padding: const EdgeInsets.all(12.0),
                       child: Column(
-                        crossAxisAlignment: CrossAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
