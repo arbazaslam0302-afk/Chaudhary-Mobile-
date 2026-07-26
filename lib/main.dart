@@ -1,6 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   runApp(const ChaudharyMobileApp());
 }
 
@@ -16,7 +22,28 @@ class ChaudharyMobileApp extends StatelessWidget {
         primarySwatch: Colors.indigo,
         scaffoldBackgroundColor: const Color(0xFFF4F6F9),
       ),
-      home: const GoogleLoginScreen(),
+      home: const AuthWrapper(),
+    );
+  }
+}
+
+// ------------------- AUTH WRAPPER -------------------
+class AuthWrapper extends StatelessWidget {
+  const AuthWrapper({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        if (snapshot.hasData) {
+          return DashboardScreen(user: snapshot.data!);
+        }
+        return const GoogleLoginScreen();
+      },
     );
   }
 }
@@ -30,25 +57,26 @@ class GoogleLoginScreen extends StatefulWidget {
 }
 
 class _GoogleLoginScreenState extends State<GoogleLoginScreen> {
-  bool _isLoading = false;
+  bool _isSigningIn = false;
 
-  void _handleGoogleSignIn() async {
-    setState(() => _isLoading = true);
-    
-    // Simulating Google Authentication Delay
-    await Future.delayed(const Duration(seconds: 1));
-
-    if (mounted) {
-      setState(() => _isLoading = false);
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const DashboardScreen(
-            userEmail: 'chaudhary.mobile@gmail.com',
-            userName: 'Chaudhary Owner',
-          ),
-        ),
+  Future<void> _signInWithGoogle() async {
+    setState(() => _isSigningIn = true);
+    try {
+      final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+      if (googleUser != null) {
+        final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+        final OAuthCredential credential = GoogleAuthProvider.credential(
+          accessToken: googleAuth.accessToken,
+          idToken: googleAuth.idToken,
+        );
+        await FirebaseAuth.instance.signInWithCredential(credential);
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Login Failed: ${e.toString()}')),
       );
+    } finally {
+      if (mounted) setState(() => _isSigningIn = false);
     }
   }
 
@@ -72,9 +100,9 @@ class _GoogleLoginScreenState extends State<GoogleLoginScreen> {
                     'Chaudhary Mobile',
                     style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.indigo),
                   ),
-                  const Text('Digikhata & Inventory System', style: TextStyle(color: Colors.grey)),
+                  const Text('Cloud Digikhata System', style: TextStyle(color: Colors.grey)),
                   const SizedBox(height: 30),
-                  _isLoading
+                  _isSigningIn
                       ? const CircularProgressIndicator()
                       : ElevatedButton.icon(
                           style: ElevatedButton.styleFrom(
@@ -89,11 +117,12 @@ class _GoogleLoginScreenState extends State<GoogleLoginScreen> {
                             'Sign in with Google',
                             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                           ),
-                          onPressed: _handleGoogleSignIn,
+                          onPressed: _signInWithGoogle,
                         ),
                   const SizedBox(height: 15),
                   const Text(
-                    'Your stock data will be saved securely.',
+                    'Data will sync across all connected devices.',
+                    textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ],
@@ -106,354 +135,282 @@ class _GoogleLoginScreenState extends State<GoogleLoginScreen> {
   }
 }
 
-// ------------------- MODELS -------------------
-class TransactionItem {
-  String id;
-  bool isStockIn;
-  int quantity;
-  double price;
-  String description;
-  DateTime date;
-
-  TransactionItem({
-    required this.id,
-    required this.isStockIn,
-    required this.quantity,
-    required this.price,
-    required this.description,
-    required this.date,
-  });
-}
-
-class StockModel {
-  String id;
-  String modelName;
-  int quantity;
-  double costPrice;
-  double sellingPrice;
-  List<TransactionItem> history;
-
-  StockModel({
-    required this.id,
-    required this.modelName,
-    required this.quantity,
-    required this.costPrice,
-    required this.sellingPrice,
-    required this.history,
-  });
-}
-
 // ------------------- DASHBOARD -------------------
 class DashboardScreen extends StatefulWidget {
-  final String userEmail;
-  final String userName;
-
-  const DashboardScreen({
-    Key? key,
-    required this.userEmail,
-    required this.userName,
-  }) : super(key: key);
+  final User user;
+  const DashboardScreen({Key? key, required this.user}) : super(key: key);
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  List<StockModel> stocks = [
-    StockModel(
-      id: '1',
-      modelName: 'Samsung A12 Panel',
-      quantity: 5,
-      costPrice: 2000,
-      sellingPrice: 2500,
-      history: [
-        TransactionItem(
-          id: 't1',
-          isStockIn: true,
-          quantity: 5,
-          price: 2000,
-          description: 'Initial Purchase',
-          date: DateTime.now().subtract(const Duration(hours: 4)),
-        )
-      ],
-    ),
-    StockModel(
-      id: '2',
-      modelName: 'Y20 Panel',
-      quantity: 1,
-      costPrice: 1620,
-      sellingPrice: 1750,
-      history: [],
-    )
-  ];
-
   String searchQuery = '';
 
-  double get totalStockValue =>
-      stocks.fold(0, (sum, item) => sum + (item.quantity * item.costPrice));
+  CollectionReference get _userStockRef => FirebaseFirestore.instance
+      .collection('users')
+      .doc(widget.user.uid)
+      .collection('stocks');
 
-  int get lowStockCount =>
-      stocks.where((item) => item.quantity <= 2).length;
-
-  String _formatDateTime(DateTime dt) {
+  String _formatDate(DateTime dt) {
     return "${dt.day}/${dt.month}/${dt.year} ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}";
   }
 
+  // DATE PICKER HELPER
+  Future<DateTime?> _pickDate(BuildContext context, DateTime initialDate) async {
+    return await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+    );
+  }
+
+  // ADD NEW ITEM DIALOG
   void _addNewStockDialog() {
     final nameController = TextEditingController();
     final qtyController = TextEditingController();
     final costController = TextEditingController();
     final sellController = TextEditingController();
+    DateTime selectedDate = DateTime.now();
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Add New Stock Item'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(labelText: 'Item Name / Model'),
-              ),
-              TextField(
-                controller: qtyController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Quantity'),
-              ),
-              TextField(
-                controller: costController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Purchase Price (Cost)'),
-              ),
-              TextField(
-                controller: sellController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Sale Price'),
-              ),
-            ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Add New Item'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Item / Model Name')),
+                TextField(controller: qtyController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity')),
+                TextField(controller: costController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Cost Price')),
+                TextField(controller: sellController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Sale Price')),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Date: ${_formatDate(selectedDate)}', style: const TextStyle(fontSize: 12)),
+                    TextButton(
+                      child: const Text('Change Date'),
+                      onPressed: () async {
+                        DateTime? picked = await _pickDate(context, selectedDate);
+                        if (picked != null) {
+                          setDialogState(() => selectedDate = picked);
+                        }
+                      },
+                    )
+                  ],
+                )
+              ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              if (nameController.text.isNotEmpty && qtyController.text.isNotEmpty) {
-                int qty = int.parse(qtyController.text);
-                double cost = double.tryParse(costController.text) ?? 0;
-                DateTime now = DateTime.now();
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                if (nameController.text.isNotEmpty && qtyController.text.isNotEmpty) {
+                  int qty = int.parse(qtyController.text);
+                  double cost = double.tryParse(costController.text) ?? 0;
 
-                setState(() {
-                  stocks.add(
-                    StockModel(
-                      id: now.toString(),
-                      modelName: nameController.text,
-                      quantity: qty,
-                      costPrice: cost,
-                      sellingPrice: double.tryParse(sellController.text) ?? 0,
-                      history: [
-                        TransactionItem(
-                          id: now.toString(),
-                          isStockIn: true,
-                          quantity: qty,
-                          price: cost,
-                          description: 'Stock Added',
-                          date: now,
-                        )
-                      ],
-                    ),
-                  );
-                });
-                Navigator.pop(ctx);
-              }
-            },
-            child: const Text('Save Item'),
-          ),
-        ],
+                  DocumentReference docRef = _userStockRef.doc();
+                  await docRef.set({
+                    'modelName': nameController.text,
+                    'quantity': qty,
+                    'costPrice': cost,
+                    'sellingPrice': double.tryParse(sellController.text) ?? 0,
+                    'createdAt': Timestamp.fromDate(selectedDate),
+                  });
+
+                  await docRef.collection('history').add({
+                    'isStockIn': true,
+                    'quantity': qty,
+                    'price': cost,
+                    'description': 'Initial Stock',
+                    'date': Timestamp.fromDate(selectedDate),
+                  });
+
+                  Navigator.pop(ctx);
+                }
+              },
+              child: const Text('Save Item'),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  void _stockInOutDialog(StockModel item, bool isStockIn) {
-    final qtyController = TextEditingController();
-    final priceController = TextEditingController(
-        text: (isStockIn ? item.costPrice : item.sellingPrice).toString());
-    final noteController = TextEditingController();
+  // EDIT ITEM DIALOG
+  void _editStockDialog(String docId, Map<String, dynamic> data) {
+    final nameController = TextEditingController(text: data['modelName']);
+    final costController = TextEditingController(text: data['costPrice'].toString());
+    final sellController = TextEditingController(text: data['sellingPrice'].toString());
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(isStockIn ? 'Stock IN (+)' : 'Stock OUT (-)'),
+        title: const Text('Edit Item Details'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(item.modelName, style: const TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            TextField(
-              controller: qtyController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Quantity'),
-            ),
-            TextField(
-              controller: priceController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                  labelText: isStockIn ? 'Purchase Price' : 'Sale Price'),
-            ),
-            TextField(
-              controller: noteController,
-              decoration: const InputDecoration(labelText: 'Note / Customer Name'),
-            ),
+            TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Item / Model Name')),
+            TextField(controller: costController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Cost Price')),
+            TextField(controller: sellController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Sale Price')),
           ],
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: isStockIn ? Colors.green : Colors.red,
-            ),
-            onPressed: () {
-              int qty = int.tryParse(qtyController.text) ?? 0;
-              if (qty > 0) {
-                if (!isStockIn && qty > item.quantity) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Not enough stock available!')),
-                  );
-                  return;
-                }
-                DateTime now = DateTime.now();
-                setState(() {
-                  if (isStockIn) {
-                    item.quantity += qty;
-                  } else {
-                    item.quantity -= qty;
-                  }
-                  item.history.add(
-                    TransactionItem(
-                      id: now.toString(),
-                      isStockIn: isStockIn,
-                      quantity: qty,
-                      price: double.tryParse(priceController.text) ?? 0,
-                      description: noteController.text.isEmpty
-                          ? (isStockIn ? 'Stock In' : 'Sale / Out')
-                          : noteController.text,
-                      date: now,
-                    ),
-                  );
-                });
-                Navigator.pop(ctx);
-              }
-            },
-            child: Text(isStockIn ? 'Add Stock' : 'Out Stock'),
-          )
-        ],
-      ),
-    );
-  }
-
-  // EDIT HISTORY ENTRY DIALOG
-  void _editHistoryDialog(StockModel item, TransactionItem tx) {
-    final qtyController = TextEditingController(text: tx.quantity.toString());
-    final priceController = TextEditingController(text: tx.price.toString());
-    final noteController = TextEditingController(text: tx.description);
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Edit History Record'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: qtyController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Quantity'),
-            ),
-            TextField(
-              controller: priceController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Price'),
-            ),
-            TextField(
-              controller: noteController,
-              decoration: const InputDecoration(labelText: 'Note / Description'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () {
-              int oldQty = tx.quantity;
-              int newQty = int.tryParse(qtyController.text) ?? oldQty;
-              int qtyDifference = newQty - oldQty;
-
-              setState(() {
-                tx.quantity = newQty;
-                tx.price = double.tryParse(priceController.text) ?? tx.price;
-                tx.description = noteController.text;
-
-                // Adjust Main Stock Quantity
-                if (tx.isStockIn) {
-                  item.quantity += qtyDifference;
-                } else {
-                  item.quantity -= qtyDifference;
-                }
+            onPressed: () async {
+              await _userStockRef.doc(docId).update({
+                'modelName': nameController.text,
+                'costPrice': double.tryParse(costController.text) ?? data['costPrice'],
+                'sellingPrice': double.tryParse(sellController.text) ?? data['sellingPrice'],
               });
-
-              Navigator.pop(ctx); // Close Edit Dialog
-              Navigator.pop(context); // Refresh History Window
-              _showHistoryDialog(item);
+              Navigator.pop(ctx);
             },
-            child: const Text('Update History'),
+            child: const Text('Update'),
           )
         ],
       ),
     );
   }
 
-  void _showHistoryDialog(StockModel item) {
+  // DELETE ITEM CONFIRMATION
+  void _deleteStockDialog(String docId) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('${item.modelName} History'),
+        title: const Text('Delete Item'),
+        content: const Text('Are you sure you want to delete this item completely?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async {
+              await _userStockRef.doc(docId).delete();
+              Navigator.pop(ctx);
+            },
+            child: const Text('Delete'),
+          )
+        ],
+      ),
+    );
+  }
+
+  // STOCK IN / OUT DIALOG WITH DATE SELECTION
+  void _stockInOutDialog(String docId, int currentQty, bool isStockIn, double defaultPrice) {
+    final qtyController = TextEditingController();
+    final priceController = TextEditingController(text: defaultPrice.toString());
+    final noteController = TextEditingController();
+    DateTime selectedDate = DateTime.now();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(isStockIn ? 'Stock IN (+)' : 'Stock OUT (-)'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: qtyController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity')),
+                TextField(controller: priceController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Price')),
+                TextField(controller: noteController, decoration: const InputDecoration(labelText: 'Note / Customer Name')),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Date: ${_formatDate(selectedDate)}', style: const TextStyle(fontSize: 12)),
+                    TextButton(
+                      child: const Text('Change Date'),
+                      onPressed: () async {
+                        DateTime? picked = await _pickDate(context, selectedDate);
+                        if (picked != null) setDialogState(() => selectedDate = picked);
+                      },
+                    )
+                  ],
+                )
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: isStockIn ? Colors.green : Colors.red),
+              onPressed: () async {
+                int qty = int.tryParse(qtyController.text) ?? 0;
+                if (qty > 0) {
+                  int newQty = isStockIn ? (currentQty + qty) : (currentQty - qty);
+                  await _userStockRef.doc(docId).update({'quantity': newQty});
+
+                  await _userStockRef.doc(docId).collection('history').add({
+                    'isStockIn': isStockIn,
+                    'quantity': qty,
+                    'price': double.tryParse(priceController.text) ?? 0,
+                    'description': noteController.text.isEmpty ? (isStockIn ? 'Stock In' : 'Sale/Out') : noteController.text,
+                    'date': Timestamp.fromDate(selectedDate),
+                  });
+
+                  Navigator.pop(ctx);
+                }
+              },
+              child: Text(isStockIn ? 'Add Stock' : 'Out Stock'),
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
+  // SHOW HISTORY & EDIT/DELETE HISTORY ENTRY
+  void _showHistoryDialog(String docId, String modelName) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('$modelName History'),
         content: SizedBox(
           width: double.maxFinite,
           height: 350,
-          child: item.history.isEmpty
-              ? const Center(child: Text('No transactions recorded yet.'))
-              : ListView.builder(
-                  itemCount: item.history.length,
-                  itemBuilder: (context, index) {
-                    final tx = item.history.reversed.toList()[index];
-                    return Card(
-                      color: tx.isStockIn ? Colors.green.shade50 : Colors.red.shade50,
-                      margin: const EdgeInsets.symmetric(vertical: 4),
-                      child: ListTile(
-                        leading: Icon(
-                          tx.isStockIn ? Icons.arrow_downward : Icons.arrow_upward,
-                          color: tx.isStockIn ? Colors.green : Colors.red,
-                        ),
-                        title: Text('${tx.isStockIn ? "IN" : "OUT"}: ${tx.quantity} Pcs @ Rs. ${tx.price}'),
-                        subtitle: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (tx.description.isNotEmpty) Text('Note: ${tx.description}'),
-                            Text(
-                              _formatDateTime(tx.date),
-                              style: const TextStyle(fontSize: 11, color: Colors.grey),
-                            ),
-                          ],
-                        ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.edit, color: Colors.indigo, size: 20),
-                          onPressed: () => _editHistoryDialog(item, tx),
-                        ),
+          child: StreamBuilder<QuerySnapshot>(
+            stream: _userStockRef.doc(docId).collection('history').orderBy('date', descending: true).snapshots(),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+              var docs = snapshot.data!.docs;
+
+              if (docs.isEmpty) return const Center(child: Text('No transaction history found.'));
+
+              return ListView.builder(
+                itemCount: docs.length,
+                itemBuilder: (context, index) {
+                  var tx = docs[index].data() as Map<String, dynamic>;
+                  String historyId = docs[index].id;
+                  DateTime dt = (tx['date'] as Timestamp).toDate();
+
+                  return Card(
+                    color: tx['isStockIn'] ? Colors.green.shade50 : Colors.red.shade50,
+                    child: ListTile(
+                      title: Text('${tx['isStockIn'] ? "IN" : "OUT"}: ${tx['quantity']} Pcs @ Rs. ${tx['price']}'),
+                      subtitle: Text('Note: ${tx['description']}\nDate: ${_formatDate(dt)}', style: const TextStyle(fontSize: 11)),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                            onPressed: () async {
+                              await _userStockRef.doc(docId).collection('history').doc(historyId).delete();
+                            },
+                          )
+                        ],
                       ),
-                    );
-                  },
-                ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
@@ -464,10 +421,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final filteredStocks = stocks
-        .where((s) => s.modelName.toLowerCase().contains(searchQuery.toLowerCase()))
-        .toList();
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Chaudhary Mobile Digikhata'),
@@ -475,153 +428,158 @@ class _DashboardScreenState extends State<DashboardScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
-            onPressed: () {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (context) => const GoogleLoginScreen()),
-              );
+            onPressed: () async {
+              await GoogleSignIn().signOut();
+              await FirebaseAuth.instance.signOut();
             },
           )
         ],
       ),
-      body: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            color: Colors.indigo,
-            child: Row(
-              children: [
-                Expanded(
-                  child: Card(
-                    color: Colors.white,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        children: [
-                          const Text('Low Stock Alert',
-                              style: TextStyle(color: Colors.grey, fontSize: 12)),
-                          const SizedBox(height: 4),
-                          Text('$lowStockCount Items',
-                              style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.red)),
-                        ],
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _userStockRef.snapshots(),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+
+          var docs = snapshot.data!.docs;
+          double totalStockValue = 0;
+          int lowStockCount = 0;
+
+          for (var doc in docs) {
+            var data = doc.data() as Map<String, dynamic>;
+            int qty = data['quantity'] ?? 0;
+            double cost = (data['costPrice'] ?? 0).toDouble();
+            totalStockValue += (qty * cost);
+            if (qty <= 2) lowStockCount++;
+          }
+
+          var filteredDocs = docs.where((doc) {
+            var data = doc.data() as Map<String, dynamic>;
+            String name = (data['modelName'] ?? '').toString().toLowerCase();
+            return name.contains(searchQuery.toLowerCase());
+          }).toList();
+
+          return Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: Colors.indigo,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(12.0),
+                          child: Column(
+                            children: [
+                              const Text('Low Stock Alert', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                              Text('$lowStockCount Items', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red)),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ),
-                Expanded(
-                  child: Card(
-                    color: Colors.white,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        children: [
-                          const Text('Stock Value',
-                              style: TextStyle(color: Colors.grey, fontSize: 12)),
-                          const SizedBox(height: 4),
-                          Text('Rs. ${totalStockValue.toStringAsFixed(0)}',
-                              style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.green)),
-                        ],
+                    Expanded(
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(12.0),
+                          child: Column(
+                            children: [
+                              const Text('Stock Value', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                              Text('Rs. ${totalStockValue.toStringAsFixed(0)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: TextField(
-              onChanged: (val) => setState(() => searchQuery = val),
-              decoration: InputDecoration(
-                hintText: 'Search model/item...',
-                prefixIcon: const Icon(Icons.search),
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
+                  ],
                 ),
               ),
-            ),
-          ),
-          Expanded(
-            child: ListView.builder(
-              itemCount: filteredStocks.length,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              itemBuilder: (context, index) {
-                final item = filteredStocks[index];
-                bool isLowStock = item.quantity <= 2;
+              Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: TextField(
+                  onChanged: (val) => setState(() => searchQuery = val),
+                  decoration: InputDecoration(
+                    hintText: 'Search model/item...',
+                    prefixIcon: const Icon(Icons.search),
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: filteredDocs.length,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  itemBuilder: (context, index) {
+                    var doc = filteredDocs[index];
+                    var data = doc.data() as Map<String, dynamic>;
+                    String docId = doc.id;
+                    int qty = data['quantity'] ?? 0;
 
-                return Card(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  margin: const EdgeInsets.only(bottom: 10),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    return Card(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      margin: const EdgeInsets.only(bottom: 10),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(item.modelName,
-                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                            if (isLowStock)
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.red.shade100,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: const Text('Low Stock',
-                                    style: TextStyle(color: Colors.red, fontSize: 10)),
-                              )
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'Quantity: ${item.quantity} | Cost: Rs. ${item.costPrice} | Sale: Rs. ${item.sellingPrice}',
-                          style: TextStyle(color: Colors.grey.shade700),
-                        ),
-                        const Divider(),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            TextButton.icon(
-                              icon: const Icon(Icons.history, size: 18),
-                              label: const Text('History'),
-                              onPressed: () => _showHistoryDialog(item),
-                            ),
                             Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                OutlinedButton.icon(
-                                  icon: const Icon(Icons.add, color: Colors.green, size: 16),
-                                  label: const Text('IN', style: TextStyle(color: Colors.green)),
-                                  onPressed: () => _stockInOutDialog(item, true),
-                                ),
-                                const SizedBox(width: 8),
-                                OutlinedButton.icon(
-                                  icon: const Icon(Icons.remove, color: Colors.red, size: 16),
-                                  label: const Text('OUT', style: TextStyle(color: Colors.red)),
-                                  onPressed: () => _stockInOutDialog(item, false),
-                                ),
+                                Text(data['modelName'] ?? '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                Row(
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.edit, color: Colors.indigo, size: 20),
+                                      onPressed: () => _editStockDialog(docId, data),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                                      onPressed: () => _deleteStockDialog(docId),
+                                    ),
+                                  ],
+                                )
                               ],
                             ),
+                            Text('Quantity: $qty | Cost: Rs. ${data['costPrice']} | Sale: Rs. ${data['sellingPrice']}'),
+                            const Divider(),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                TextButton.icon(
+                                  icon: const Icon(Icons.history, size: 18),
+                                  label: const Text('History'),
+                                  onPressed: () => _showHistoryDialog(docId, data['modelName'] ?? ''),
+                                ),
+                                Row(
+                                  children: [
+                                    OutlinedButton.icon(
+                                      icon: const Icon(Icons.add, color: Colors.green, size: 16),
+                                      label: const Text('IN', style: TextStyle(color: Colors.green)),
+                                      onPressed: () => _stockInOutDialog(docId, qty, true, (data['costPrice'] ?? 0).toDouble()),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    OutlinedButton.icon(
+                                      icon: const Icon(Icons.remove, color: Colors.red, size: 16),
+                                      label: const Text('OUT', style: TextStyle(color: Colors.red)),
+                                      onPressed: () => _stockInOutDialog(docId, qty, false, (data['sellingPrice'] ?? 0).toDouble()),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            )
                           ],
-                        )
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          );
+        },
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addNewStockDialog,
