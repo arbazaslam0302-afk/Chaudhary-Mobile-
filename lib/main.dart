@@ -6,7 +6,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  await Firebase.initializeApp(); // Yeh line zaroori hai
   runApp(const ChaudharyMobileApp());
 }
 
